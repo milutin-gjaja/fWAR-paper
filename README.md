@@ -1,0 +1,1 @@
+Paper that explores the relationship between starting pitcher skill (as defined by fWAR) and IP/GS, and subsequently proposes a modification to the fWAR formula that takes said relationship into account. Source code is included.
