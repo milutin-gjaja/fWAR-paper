@@ -3,8 +3,6 @@ library(arsenal)
 
 #WAR Calculations
 
-setwd("C:\\Users\\milut\\Desktop\\Misc\\Various bs\\WAR calcs\\New Data")
-
 #BRef: G, GS, IP, HR, BB, HBP, K
 bref_22 <- read_csv("2022_BRef, G, GS, IP, HR, BB, HBP, K.csv", show_col_types = FALSE)
 bref_23 <- read_csv("2023_BRef, G, GS, IP, HR, BB, HBP, K.csv", show_col_types = FALSE)
@@ -188,8 +186,6 @@ calc_fWAR_lm <- lm(fWAR ~ calc_fWAR, data = filtered_sp)
 
 
 # Graphs
-
-setwd("C:\\Users\\milut\\Desktop\\Misc\\Various bs\\WAR calcs\\New Data\\Graphs")
 
 # Correlation between pFIPR9 and IP/GS for filtered
 
