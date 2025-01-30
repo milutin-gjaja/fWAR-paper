@@ -1,244 +1,189 @@
 library(tidyverse)
 library(arsenal)
+library(baseballr)
 
-#WAR Calculations
+# Player metrics: Season, team_name, xMLBAMID, PlayerNameRoute, PlayerName, 
+# playerid, G, GS, IP, HR, BB, HBP, SO, WAR, IFFB
+player_metrics = c("Season", "team_name", "xMLBAMID", "PlayerNameRoute",
+    "PlayerName", "playerid", "G", "GS", "IP", "HR", "BB", "HBP",
+    "SO", "WAR", "IFFB")
 
-#BRef: G, GS, IP, HR, BB, HBP, K
-bref_22 <- read_csv("2022_BRef, G, GS, IP, HR, BB, HBP, K.csv", show_col_types = FALSE)
-bref_23 <- read_csv("2023_BRef, G, GS, IP, HR, BB, HBP, K.csv", show_col_types = FALSE)
-bref_24 <- read_csv("2024_BRef, G, GS, IP, HR, BB, HBP, K.csv", show_col_types = FALSE)
+# Park metrics: season, home_team, FIP
+park_metrics = c("season", "home_team", "FIP")
 
-#FanGraphs: fWAR, IFFB, PF, league averages, bullpen data
-pf_23 <- read_csv("2023_FanGraphs, PF.csv", show_col_types = FALSE)
-fg_league_data <- read_csv("fg_league_data.csv", show_col_types = FALSE)
-fg_22 <- read_csv("2022_FanGraphs, fWAR, IFFB.csv", show_col_types = FALSE)
-fg_23 <- read_csv("2023_FanGraphs, fWAR, IFFB.csv", show_col_types = FALSE)
-fg_24 <- read_csv("2024_FanGraphs, fWAR, IFFB.csv", show_col_types = FALSE)
-bullpen_data <- read_csv("fg_bullpen_data.csv", show_col_types = FALSE)
-fg_lg_spec <- read_csv("fg_lg_specific_avg.csv", show_col_types = FALSE)
+# Import data from FanGraphs
+pitcher_data <- bind_rows(
+    fg_pitcher_leaders(startseason = 2024, endseason = 2024, ind = 1),
+    fg_pitcher_leaders(startseason = 2023, endseason = 2023, ind = 1),
+    fg_pitcher_leaders(startseason = 2022, endseason = 2022, ind = 1))
 
-#Spotrac: payroll data
+park_data <- bind_rows(fg_park(2024), fg_park(2023), fg_park(2022))
+
 payroll_data <- read_csv("spotrac_payroll_data.csv", show_col_types = FALSE)
 
-#Standardized abbreviations
+mlb_data <- read_csv("fg_league_data.csv", show_col_types = FALSE)
+
+league_data <- read_csv("fg_lg_specific_avg.csv", show_col_types = FALSE)
+
+bullpen_data <- read_csv("fg_bullpen_data.csv", show_col_types = FALSE)
+
 abr <- read_csv("Abbreviations.csv", show_col_types = FALSE)
 
-#Standardize team abbreviations
-bref_22 <- bref_22 %>%
-    left_join(abr, by = c("Team" = "Name")) %>%
-    mutate(Team = ifelse(is.na(Abbreviation), Team, Abbreviation)) %>%
-    select(-Abbreviation)
+# Clean up data: select useful columns, change 
+# column names, correct IP, add abbreviations, etc
 
-bref_23 <- bref_23 %>%
-    left_join(abr, by = c("Team" = "Name")) %>%
-    mutate(Team = ifelse(is.na(Abbreviation), Team, Abbreviation)) %>%
-    select(-Abbreviation)
+pitcher_data <- pitcher_data %>% 
+    select(all_of(player_metrics)) %>%
+    mutate(fWAR = WAR, K = SO, Team = team_name, Player = PlayerNameRoute,
+        `IP/GS` = IP/GS,
+        IP = trunc(IP) + (IP - trunc(IP)) / 0.3) %>%
+    mutate(Team = replace(Team, Team == "- - -", "TOT")) %>%
+    select(-team_name, -PlayerNameRoute, -SO, -WAR, -PlayerName, -xMLBAMID, -playerid)
 
-bref_24 <- bref_24 %>%
-    left_join(abr, by = c("Team" = "Name")) %>%
-    mutate(Team = ifelse(is.na(Abbreviation), Team, Abbreviation)) %>%
-    select(-Abbreviation)
+avg_park_rows <- tibble(League = c("2LG", "2LG", "2LG"), 
+    Team = c("TOT", "TOT", "TOT"), 
+    Season = c(2024, 2023, 2022), 
+    PF = c(100 , 100, 100))
 
-pf_23 <- pf_23 %>%
-    left_join(abr, by = c("Team" = "Name")) %>%
-    mutate(Team = ifelse(is.na(Abbreviation), Team, Abbreviation)) %>%
-    select(-Abbreviation)
+park_data <- park_data %>%
+    select(all_of(park_metrics)) %>%
+    left_join(abr, by = c("home_team" = "Name")) %>%
+    mutate(Team = ifelse(is.na(Abbreviation), home_team, Abbreviation),
+        Season = season, PF = FIP) %>%
+    select(-Abbreviation, -season, -FIP, -home_team)
+    
+park_data <- bind_rows(park_data, avg_park_rows)
 
-#Join Bref and FG data
-player_data_22 <- bref_22 %>%
-    left_join(fg_22, by = c("Player" = "Name", "Team" = "Team")) %>%
-    mutate(Year = 2022)
-
-player_data_23 <- bref_23 %>%
-    left_join(fg_23, by = c("Player" = "Name", "Team" = "Team")) %>%
-    mutate(Year = 2023)
-
-player_data_24 <- bref_24 %>%
-    left_join(fg_24, by = c("Player" = "Name", "Team" = "Team")) %>%
-    mutate(Year = 2024)
-
-#Calc ifFIPc for each season 
-fg_league_data <- fg_league_data %>%
+# Calculate ifFIPc for each season
+mlb_data <- mlb_data %>%
     mutate(ifFIPc = mlbERA - (13*mlbHR + 3*(mlbBB + mlbHBP) - 2*(mlbK + mlbIFFB)) / mlbIP)
 
-#Merge league data, calc league-specific pFIPR9, add rows for leage averages
-fg_lg_spec <- fg_lg_spec %>%
-    left_join(select(fg_league_data, Year, mlbIP, ifFIPc, mlbERA, mlbRA9),
+# Calculate league-specific pFIPR9
+league_data <- league_data %>%
+    left_join(select(mlb_data, Year, mlbIP, ifFIPc, mlbERA, mlbRA9),
     by = c("Year" = "Year")) %>%
     mutate(lgpFIPR9 = (13*lgHR + 3*(lgBB + lgHBP) - 2*(lgK + lgIFFB)) / lgIP + ifFIPc + mlbRA9 - mlbERA)
-  
-grouped_data <- fg_lg_spec %>%
-    group_by(Year)
 
-new_rows <- grouped_data %>%
-    select(-League) %>%
-    summarize(across(c(lgERA, lgRA9, lgpFIPR9, ifFIPc, mlbERA, mlbRA9, mlbIP), 
-        \(x) mean(x, na.rm = TRUE)),
-      across(-c(lgERA, lgRA9, lgpFIPR9, ifFIPc, mlbERA, mlbRA9, mlbIP), 
-        \(x) sum(x, na.rm = TRUE))) %>%
-    mutate(League = "2LG") %>%
-    mutate(across(everything(), ~ ifelse(is.na(.), 0, .)))
+# Calculate MLB-wide stats by year
+summary_rows <- league_data %>% 
+    group_by(Year) %>%
+    summarize(across(.cols = c(lgERA, lgRA9, lgpFIPR9, ifFIPc, mlbERA, mlbRA9, mlbIP), .fns = mean),    
+        across(.cols = c(lgBB, lgHBP, lgK, lgIFFB, lgIP, lgHR), .fns = sum)) %>%
+    mutate(League = "2LG")
 
-fg_lg_spec <- bind_rows(fg_lg_spec, new_rows)
+league_data <- bind_rows(league_data, summary_rows)
 
-#Merge all data, including lg stats and park factor
-total_p_data <- bind_rows(player_data_22, player_data_23, player_data_24) %>%
-    left_join(fg_lg_spec, by = c("Year" = "Year", "Lg" = "League")) %>%
-    left_join(select(pf_23, Team, pfFIP), by = c("Team" = "Team")) %>%
-    rename('Park Factor' = pfFIP, K = SO) %>%
-    mutate(`IP/GS` = IP/GS)
+# Merge all data
+pitcher_data <- pitcher_data %>%
+    left_join(park_data, by = c("Team" = "Team", "Season" = "Season")) %>%
+    left_join(league_data, by = c("Season" = "Year", "League" = "League"))
 
-total_bp_data <- bullpen_data %>%
-    left_join(fg_lg_spec, by = c("Year" = "Year", "League" = "League")) %>%
-    left_join(select(pf_23, Team, pfFIP), by = c("Team" = "Team")) %>%
-    rename('Park Factor' = pfFIP, K = SO)
+bullpen_data <- bullpen_data %>%
+    left_join(park_data, by = c("Team" = "Team", "Year" = "Season", "League" = "League")) %>%
+    left_join(league_data, by = c("Year" = "Year", "League" = "League"))
 
-#Calc fWAR components
-total_p_data <- total_p_data %>%
+# Calculate fWAR components
+pitcher_data <- pitcher_data %>%
     mutate(ifFIP = (13*HR + 3*(BB + HBP) - 2*(K + IFFB)) / IP + ifFIPc) %>%
-    mutate(pFIPR9 = (ifFIP + mlbRA9 - mlbERA) / (`Park Factor` / 100)) %>%
+    mutate(pFIPR9 = (ifFIP + mlbRA9 - mlbERA) / (PF / 100)) %>%
     mutate(dRPW = 1.5 * (((lgpFIPR9 * (18 - (IP/G))) + (pFIPR9 * (IP/G))) / 18 + 2)) %>%
     mutate(`pFIPR9/dRPW` = pFIPR9/dRPW) %>%
     mutate(RL = 0.03*(1-GS/G) + 0.12*(GS/G)) %>%
     mutate(calc_fWAR_raw = ((lgpFIPR9 - pFIPR9) / dRPW + RL) * (IP/9))
 
-total_bp_data <- total_bp_data %>%
+bullpen_data <- bullpen_data %>%
     mutate(`IP/GR` = IP/G) %>%
     mutate(ifFIP = (13*HR + 3*(BB + HBP) - 2*(K + IFFB)) / IP + ifFIPc) %>%
-    mutate(bpFIPR9 = (ifFIP + mlbRA9 - mlbERA) / (`Park Factor` / 100)) %>%
+    mutate(bpFIPR9 = (ifFIP + mlbRA9 - mlbERA) / (PF / 100)) %>%
     mutate(dRPW = 1.5 * (((lgpFIPR9 * (18 - (`IP/GR`))) + (bpFIPR9 * (`IP/GR`))) / 18 + 2)) %>%
     mutate(`pFIPR9/dRPW` = bpFIPR9/dRPW)
 
-#Calc league correction each year/player and final fWAR
-sum_fWAR_raw_season <- total_p_data %>%
-    group_by(Year) %>%
-    summarize(total_raw_fWAR = sum(calc_fWAR_raw, na.rm = TRUE))
+# Calculate league correction and final fWAR
+correction_rows <- pitcher_data %>%
+    group_by(Season) %>%
+    summarize(total_raw_fWAR = sum(calc_fWAR_raw, na.rm = TRUE)) %>%
+    left_join(select(mlb_data, mlbIP, Year), by = c("Season" = "Year")) %>%
+    mutate(WARIP = (430 - total_raw_fWAR) / mlbIP)
 
-payroll_data <- payroll_data %>%
-    left_join(sum_fWAR_raw_season, by = "Year") %>%
-    left_join(select(fg_league_data, Year, mlbIP), by = "Year") %>%
-    mutate(WARIP = (P_WAR - total_raw_fWAR) / mlbIP)
-
-total_p_data <- total_p_data %>%
-    left_join(select(payroll_data, -`Total payroll`, -`Pitcher payroll`, -`Fielder Payroll`), 
-        by = c("Year" = "Year")) %>%
+pitcher_data <- pitcher_data %>%
+    left_join(correction_rows, by = c("Season" = "Season", "mlbIP" = "mlbIP")) %>%
     mutate(Lgc = WARIP * IP) %>%
     mutate(calc_fWAR = calc_fWAR_raw + Lgc)
 
-#Starting pitcher filters: GS >= 7, GS/G >= 0.8
-filtered_sp <- total_p_data %>%
+# Starting pitcher filters: GS >= 7, GS/G >= 0.8
+filtered <- pitcher_data %>%
     filter(GS >= 7 & GS/G >= 0.8)
 
-#Expected replacement contribution; taken from filtered players with -0.5 <= fWAR <= 0.5
-rl_IP_GS = mean(select(filter(filtered_sp, fWAR <= 0.5 & fWAR >= -0.5), `IP/GS`)[[1]])
-filtered_sp <- filtered_sp %>%
-    mutate(bp_IP_GS = `IP/GS` - rl_IP_GS)
+# Expected replacement contribution; taken from filtered players with -0.5 <= fWAR <= 0.5
+rl_IP_GS = mean(select(filter(filtered, fWAR <= 0.5 & fWAR >= -0.5), `IP/GS`)[[1]])
 
-#Calculate RL, bullpen contributions, new raw fWAR
-filtered_sp <- filtered_sp %>%
+# Calculate RL, bullpen contributions, new raw fWAR
+filtered <- filtered %>%
+    mutate(bp_IP_GS = `IP/GS` - rl_IP_GS) %>%
     mutate(rl_contribution = ((lgpFIPR9 - pFIPR9) / dRPW + RL) * (rl_IP_GS/9) * GS) %>%
-    left_join(select(total_bp_data, Year, Team, bpFIPR9), 
-        by = c("Team" = "Team", "Year" = "Year")) %>%
+    left_join(select(bullpen_data, Year, Team, bpFIPR9), 
+        by = c("Team" = "Team", "Season" = "Year")) %>%
     mutate(bp_contribution = (bpFIPR9 - pFIPR9) / dRPW * (`IP/GS` - rl_IP_GS) / 9 * GS) %>%
     mutate(new_fWAR_raw = (rl_contribution + bp_contribution))
 
-#At this point, there are two options: calculate new_fWAR using the old Lgc,
-#or calculate nLgc separately and use that for new_fWAR. Both methods have flaws.
-
-#Calculate nLgc method
-
-# total_p_data <- total_p_data %>%
-#     left_join(select(filtered_sp, Player, Year, new_fWAR_raw), by = c("Player" = "Player", "Year" = "Year")) %>%
-#     mutate(new_fWAR_raw = coalesce(new_fWAR_raw, calc_fWAR_raw))
-
-# sum_new_fWAR_raw_season <- total_p_data %>%
-#     group_by(Year) %>%
-#     summarize(total_new_raw_fWAR = sum(new_fWAR_raw, na.rm = TRUE))
-
-# payroll_data <- payroll_data %>%
-#     left_join(sum_new_fWAR_raw_season, by = "Year") %>%
-#     mutate(new_WARIP = (P_WAR - total_new_raw_fWAR) / mlbIP)
-
-# total_p_data <- total_p_data %>%
-#     left_join(select(payroll_data, Year, new_WARIP), by = c("Year" = "Year")) %>%
-#     mutate(nLgc = new_WARIP * IP) %>%
-#     mutate(new_fWAR = new_fWAR_raw + nLgc)
-
-# filtered_sp <- filtered_sp %>%
-#     inner_join(select(total_p_data, Player, Year, new_fWAR), 
-#       by = c("Player" = "Player", "Year" = "Year")) %>%
-#     mutate(diff_calc_fWAR = abs(calc_fWAR - new_fWAR)) %>%
-#     mutate(diff_fWAR = abs(fWAR - calc_fWAR))
-
-#Use Lgc method
-
-filtered_sp <- filtered_sp %>%
+# Calculate new fWAR using old league constant
+filtered <- filtered %>%
     mutate(new_fWAR = new_fWAR_raw + Lgc) %>%
     mutate(diff_calc_fWAR = abs(calc_fWAR - new_fWAR)) %>%
     mutate(diff_fWAR = abs(fWAR - calc_fWAR))
 
 #Correlations: IP/GS ~ pFIPR9, IP/GS ~ `pFIPR9/dRPW`, fWAR ~ calc_fWAR
-pFIPR9_lm <- lm(`IP/GS` ~ pFIPR9, data = filtered_sp)
-`pFIPR9/dRPW_lm` <- lm(`IP/GS` ~ `pFIPR9/dRPW`, data = filtered_sp)
-calc_fWAR_lm <- lm(fWAR ~ calc_fWAR, data = filtered_sp)
+pFIPR9_lm <- lm(`IP/GS` ~ pFIPR9, data = filtered)
+pFIPR9_r_squared <- summary(pFIPR9_lm)$r.squared
 
+`pFIPR9/dRPW_lm` <- lm(`IP/GS` ~ `pFIPR9/dRPW`, data = filtered)
+`pFIPR9/dRPW_r_squared` <- summary(`pFIPR9/dRPW_lm`)$r.squared
 
+calc_fWAR_lm <- lm(fWAR ~ calc_fWAR, data = filtered)
+calc_fWAR_r_squared <- summary(calc_fWAR_lm)$r.squared
 
-
-# Graphs
+# Plots
 
 # Correlation between pFIPR9 and IP/GS for filtered
 
-# pFIPR9_r_squared <- summary(pFIPR9_lm)$r.squared
-
-# plot <- ggplot(filtered_sp, aes(x = pFIPR9, y = `IP/GS`)) +
+# plot <- ggplot(filtered, aes(x = pFIPR9, y = `IP/GS`)) +
 #   geom_point(color = "blue") +
 #   geom_smooth(method = "lm", color = "red", se = TRUE) +
 #   labs(title = "Correlation between IP/GS and pFIPR9, filtered",
 #     x = "pFIPR9", y = "IP/GS") +
 #   annotate("text", 
-#     x = max(filtered_sp$pFIPR9) - 1, y = max(filtered_sp$`IP/GS`), 
-#     label = paste("R² =", round(pFIPR9_r_squared, 3)), 
-#     hjust = 0, vjust = 1, size = 5, color = "black") 
+#     x = max(filtered$pFIPR9) - 1, y = max(filtered$`IP/GS`), 
+#     label = paste("R² =", round(pFIPR9_r_squared, 3)))
 
 # ggsave("Correlation\ between\ pFIPR9\ and\ IPGS\ filtered.png", 
 #     plot = plot, width = 8, height = 6, dpi = 300)
 
-# # Correlation between pFIPR9/dRPW and IP/GS for filtered
+# Correlation between pFIPR9/dRPW and IP/GS for filtered
 
-# wpg_r_squared <- summary(`pFIPR9/dRPW_lm`)$r.squared
-
-# plot <- ggplot(filtered_sp, aes(x = `pFIPR9/dRPW`, y = `IP/GS`)) +
+# plot <- ggplot(filtered, aes(x = `pFIPR9/dRPW`, y = `IP/GS`)) +
 #   geom_point(color = "blue") +
 #   geom_smooth(method = "lm", color = "red", se = TRUE) +
 #   labs(title = "Correlation between IP/GS and pFIPR9/dRPW, filtered",
 #     x = "pFIPR9/dRPW", y = "IP/GS") +
 #   annotate("text", 
-#     x = max(filtered_sp$`pFIPR9/dRPW`) - 0.2, y = max(filtered_sp$`IP/GS`), 
-#     label = paste("R² =", round(wpg_r_squared, 3)), 
-#     hjust = 0, vjust = 1, size = 5, color = "black")
-#   geom_hline(yintercept = mean_ip_gs, 
-#     color = "#006713", linetype = "solid", linewidth = 1) +
-#   geom_hline(yintercept = mean_ip_gs_fwar_mid, 
-#     color = "#006713", linetype = "dashed", linewidth = 1) +
-#   geom_hline(yintercept = mean_ip_gs_fwar_high, 
-#     color = "#006713", linetype = "dotted", linewidth = 1)
+#     x = max(filtered$`pFIPR9/dRPW`) - 0.2, y = max(filtered$`IP/GS`), 
+#     label = paste("R² =", round(`pFIPR9/dRPW_r_squared`, 3)))
 
 # ggsave("Correlation\ between\ pFIPR9_on_dRPW\ and IPGS.png", 
 #     plot = plot, width = 8, height = 6, dpi = 300)
 
 # Illustrative graph with averages
 
-# mean_ip_gs <- mean(filtered_sp$`IP/GS`, na.rm = TRUE)
-# mean_ip_gs_fwar_mid <- mean(filtered_sp$`IP/GS`[filtered_sp$calc_fWAR >= -0.5 & filtered_sp$calc_fWAR <= 0.5], na.rm = TRUE)
-# mean_ip_gs_fwar_high <- mean(filtered_sp$`IP/GS`[filtered_sp$calc_fWAR > 2.8], na.rm = TRUE)
+# mean_ip_gs <- mean(filtered$`IP/GS`, na.rm = TRUE)
+# mean_ip_gs_fwar_mid <- mean(filtered$`IP/GS`[filtered$calc_fWAR >= -0.5 & filtered$calc_fWAR <= 0.5], na.rm = TRUE)
+# mean_ip_gs_fwar_high <- mean(filtered$`IP/GS`[filtered$calc_fWAR > 2.8], na.rm = TRUE)
 
-# mean_pfipr9 <- mean(filtered_sp$pFIPR9, na.rm = TRUE)
-# mean_pfipr9_mid <- mean(filtered_sp$pFIPR9[filtered_sp$calc_fWAR >= -0.5 & filtered_sp$calc_fWAR <= 0.5], na.rm = TRUE)
-# mean_pfipr9_high <- mean(filtered_sp$pFIPR9[filtered_sp$calc_fWAR > 2.8], na.rm = TRUE)
-# mean_bp_pfipr9 <- mean(total_bp_data$bpFIPR9, na.rm = TRUE)
+# mean_pfipr9 <- mean(filtered$pFIPR9, na.rm = TRUE)
+# mean_pfipr9_mid <- mean(filtered$pFIPR9[filtered$calc_fWAR >= -0.5 & filtered$calc_fWAR <= 0.5], na.rm = TRUE)
+# mean_pfipr9_high <- mean(filtered$pFIPR9[filtered$calc_fWAR > 2.8], na.rm = TRUE)
+# mean_bp_pfipr9 <- mean(bullpen_data$bpFIPR9, na.rm = TRUE)
 
-# plot <- ggplot(filtered_sp, aes(x = pFIPR9, y = `IP/GS`)) +
+# plot <- ggplot(filtered, aes(x = pFIPR9, y = `IP/GS`)) +
 #   geom_point(color = "blue") +
 #   labs(title = "Relationship between IP/GS and pFIPR9 with benchmarks",
 #     x = "pFIPR9", y = "IP/GS") +
@@ -277,25 +222,23 @@ calc_fWAR_lm <- lm(fWAR ~ calc_fWAR, data = filtered_sp)
 # ggsave("Correlation\ between\ pFIPR9\ and\ IPGS\ illustrated.png", 
 #     plot = plot, width = 8, height = 6, dpi = 300)
 
-# # Correlation between fWAR and calc_fWAR
+# Correlation between fWAR and calc_fWAR
 
-# fWAR_r_squared <- summary(calc_fWAR_lm)$r.squared
-
-# plot <- ggplot(filtered_sp, aes(x = fWAR, y = calc_fWAR)) +
+# plot <- ggplot(filtered, aes(x = fWAR, y = calc_fWAR)) +
 #   geom_point(color = "blue") +
 #   geom_smooth(method = "lm", color = "red", se = TRUE) +
 #   labs(title = "Correlation between fWAR and calc_fWAR",
 #     x = "calc_fWAR", y = "fWAR") +
-#   annotate("text", x = mean(filtered_sp$calc_fWAR), y = max(filtered_sp$fWAR), 
-#     label = paste("R² =", round(fWAR_r_squared, 3)), 
+#   annotate("text", x = mean(filtered$calc_fWAR), y = max(filtered$fWAR), 
+#     label = paste("R² =", round(calc_fWAR_r_squared, 3)), 
 #     hjust = 0, vjust = 1, size = 5, color = "black")
 
-# # ggsave("Correlation\ between\ fWAR\ and\ calc_fWAR.png", 
-# #     plot = plot, width = 8, height = 6, dpi = 300)
+# ggsave("Correlation\ between\ fWAR\ and\ calc_fWAR.png", 
+#     plot = plot, width = 8, height = 6, dpi = 300)
 
-# # Difference between calc_fWAR and new_fWAR for all filtered players, 10 bins
+# Difference between calc_fWAR and new_fWAR for all filtered players, 10 bins
 
-# filtered_sp <- filtered_sp %>%
+# filtered_deciles <- filtered %>%
 #   mutate(bin = ntile(calc_fWAR, 10)) %>%
 #   mutate(bin = case_when(
 #     bin == 1 ~ "1st",
@@ -312,7 +255,7 @@ calc_fWAR_lm <- lm(fWAR ~ calc_fWAR, data = filtered_sp)
 #     "10th", "9th", "8th", "7th", "6th", 
 #     "5th", "4th", "3rd", "2nd", "1st")))
 
-# plot_data <- filtered_sp %>%
+# plot_data <- filtered_deciles %>%
 #   select(bin, calc_fWAR, new_fWAR) %>%
 #   pivot_longer(cols = c(calc_fWAR, new_fWAR), names_to = "metric", values_to = "value")
 
@@ -325,12 +268,12 @@ calc_fWAR_lm <- lm(fWAR ~ calc_fWAR, data = filtered_sp)
 # ggsave("Difference\ between\ calc_fWAR\ and\ new_fWAR,\ deciles.png", 
 #     plot = plot, width = 8, height = 6, dpi = 300)
 
-# # Difference between calc_fWAR and new_fWAR for top 15 players by calc_fWAR
+# Difference between calc_fWAR and new_fWAR for top 15 players by calc_fWAR
 
-# top_15_players_fWAR <- filtered_sp %>%
+# top_15_players_fWAR <- filtered %>%
 #   arrange(desc(calc_fWAR)) %>%
 #   slice(1:15) %>%
-#   mutate(Player_Year = paste(Player, " (", Year, ")", sep = ""))
+#   mutate(Player_Year = paste(Player, " (", Season, ")", sep = ""))
 
 # plot_data <- top_15_players_fWAR %>%
 #   select(Player_Year, calc_fWAR, new_fWAR) %>%
@@ -339,18 +282,18 @@ calc_fWAR_lm <- lm(fWAR ~ calc_fWAR, data = filtered_sp)
 # plot <- ggplot(plot_data, aes(x = reorder(Player_Year, -value), y = value, fill = metric)) +
 #   geom_bar(stat = "identity", position = "dodge", alpha = 0.7) +
 #   labs(title = "Comparison of calc_fWAR and new_fWAR for Top 15 Players by calc_fWAR",
-#     x = "Player (Year)", y = "fWAR Value", fill = "Metric") +
+#     x = "Player (Season)", y = "fWAR Value", fill = "Metric") +
 #   theme(axis.text.x = element_text(angle = 45, hjust = 1))
 
-# # ggsave("Difference\ between\ calc_fWAR\ and\ new_fWAR\ for\ top\ 15\ players\ by\ calc_fWAR.png", 
-# #     plot = plot, width = 8, height = 6, dpi = 300)
+# ggsave("Difference\ between\ calc_fWAR\ and\ new_fWAR\ for\ top\ 15\ players\ by\ calc_fWAR.png", 
+#     plot = plot, width = 8, height = 6, dpi = 300)
 
-# # Difference between calc_fWAR and new_fWAR for top 20 players by difference
+# Difference between calc_fWAR and new_fWAR for top 15 players by difference
 
-# top_15_players_diff <- filtered_sp %>%
+# top_15_players_diff <- filtered %>%
 #   arrange(desc(diff_calc_fWAR)) %>%
 #   slice(1:15) %>%
-#   mutate(Player_Year = paste(Player, " (", Year, ")", sep = ""))
+#   mutate(Player_Year = paste(Player, " (", Season, ")", sep = ""))
 
 # plot_data <- top_15_players_diff %>%
 #   select(Player_Year, calc_fWAR, new_fWAR, diff_calc_fWAR) %>%
@@ -359,10 +302,8 @@ calc_fWAR_lm <- lm(fWAR ~ calc_fWAR, data = filtered_sp)
 # plot <- ggplot(plot_data, aes(x = reorder(Player_Year, -diff_calc_fWAR), y = value, fill = metric)) +
 #   geom_bar(stat = "identity", position = "dodge", alpha = 0.7) +
 #   labs(title = "Comparison of calc_fWAR and new_fWAR for Top 15 Players by calc_fWAR - new_fWAR",
-#     x = "Player (Year)", y = "fWAR Value", fill = "Metric") +
+#     x = "Player (Season)", y = "fWAR Value", fill = "Metric") +
 #   theme(axis.text.x = element_text(angle = 45, hjust = 1))
 
 # ggsave("Difference\ between\ calc_fWAR\ and\ new_fWAR\ for\ top\ 15\ players\ by\ change.png", 
 #     plot = plot, width = 8, height = 6, dpi = 300)
-
-# # # Additional: correlation screenshots, stats between calc_fWAR and new_fWAR
