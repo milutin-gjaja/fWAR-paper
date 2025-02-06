@@ -2,6 +2,8 @@ library(tidyverse)
 library(arsenal)
 library(baseballr)
 
+setwd("C:\\Users\\milut\\Desktop\\Misc\\Various bs\\WAR calcs\\New Data")
+
 # Player metrics: Season, team_name, xMLBAMID, PlayerNameRoute, PlayerName, 
 # playerid, G, GS, IP, HR, BB, HBP, SO, WAR, IFFB
 player_metrics = c("Season", "team_name", "xMLBAMID", "PlayerNameRoute",
@@ -115,7 +117,7 @@ filtered <- pitcher_data %>%
     filter(GS >= 7 & GS/G >= 0.8)
 
 # Expected replacement contribution; taken from filtered players with -0.5 <= fWAR <= 0.5
-rl_IP_GS = mean(select(filter(filtered, fWAR <= 0.5 & fWAR >= -0.5), `IP/GS`)[[1]])
+rl_IP_GS = mean(select(filter(filtered, calc_fWAR <= 0.5 & calc_fWAR >= -0.5), `IP/GS`)[[1]])
 
 # Calculate RL, bullpen contributions, new raw fWAR
 filtered <- filtered %>%
@@ -123,7 +125,7 @@ filtered <- filtered %>%
     mutate(rl_contribution = ((lgpFIPR9 - pFIPR9) / dRPW + RL) * (rl_IP_GS/9) * GS) %>%
     left_join(select(bullpen_data, Year, Team, bpFIPR9), 
         by = c("Team" = "Team", "Season" = "Year")) %>%
-    mutate(bp_contribution = (bpFIPR9 - pFIPR9) / dRPW * (`IP/GS` - rl_IP_GS) / 9 * GS) %>%
+    mutate(bp_contribution = ((bpFIPR9 - pFIPR9) / dRPW) * ((`IP/GS` - rl_IP_GS) / 9 * GS)) %>%
     mutate(new_fWAR_raw = (rl_contribution + bp_contribution))
 
 # Calculate new fWAR using old league constant
@@ -141,6 +143,8 @@ pFIPR9_r_squared <- summary(pFIPR9_lm)$r.squared
 
 calc_fWAR_lm <- lm(fWAR ~ calc_fWAR, data = filtered)
 calc_fWAR_r_squared <- summary(calc_fWAR_lm)$r.squared
+
+setwd("C:\\Users\\milut\\Desktop\\Misc\\Various bs\\WAR calcs\\New Data\\Graphs")
 
 # Plots
 
