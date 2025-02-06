@@ -2,8 +2,6 @@ library(tidyverse)
 library(arsenal)
 library(baseballr)
 
-setwd("C:\\Users\\milut\\Desktop\\Misc\\Various bs\\WAR calcs\\New Data")
-
 # Player metrics: Season, team_name, xMLBAMID, PlayerNameRoute, PlayerName, 
 # playerid, G, GS, IP, HR, BB, HBP, SO, WAR, IFFB
 player_metrics = c("Season", "team_name", "xMLBAMID", "PlayerNameRoute",
@@ -143,8 +141,6 @@ pFIPR9_r_squared <- summary(pFIPR9_lm)$r.squared
 
 calc_fWAR_lm <- lm(fWAR ~ calc_fWAR, data = filtered)
 calc_fWAR_r_squared <- summary(calc_fWAR_lm)$r.squared
-
-setwd("C:\\Users\\milut\\Desktop\\Misc\\Various bs\\WAR calcs\\New Data\\Graphs")
 
 # Plots
 
